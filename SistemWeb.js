@@ -1,18 +1,53 @@
-// 1. IMPORT FIREBASE AUTHENTICATION
+// ==========================================
+// 1. IMPORT FIREBASE & INISIALISASI VARIABEL
+// ==========================================
 import { auth, googleProvider, db, signInWithPopup, signOut, onAuthStateChanged, doc, setDoc, getDoc } from "./firebase-config.js";
+
 let currentUserUID = null;
 let currentUserEmail = null;
+let daftarTugasUser = JSON.parse(localStorage.getItem("dataTugas")) || [];
 
 const BOBOT_OUTDEGREE = 0.3;
 const BOBOT_TENGGAT = 0.7;
 
-let daftarTugasUser = JSON.parse(localStorage.getItem("dataTugas")) || [];
+// Variabel untuk fitur Search, Sort, dan Stateful Modal
+let keywordCari = "";
+let modeSort = "urgensiTinggi";
+let indeksAktif = null; // Menyimpan indeks tugas yang sedang dibuka di Modal
 
+// Dijalankan pertama kali saat web dimuat
 window.onload = function () {
     cetakDaftarTugas();
-    muatDraftInput();
+    mulaiJamRealTime();
 };
 
+// ==========================================
+// 2. SISTEM JAM & SAPAAN REAL-TIME
+// ==========================================
+function mulaiJamRealTime() {
+    setInterval(() => {
+        const now = new Date();
+        const jam = now.getHours();
+        
+        let sapaan = "Selamat Malam";
+        if (jam >= 5 && jam < 12) sapaan = "Selamat Pagi";
+        else if (jam >= 12 && jam < 15) sapaan = "Selamat Siang";
+        else if (jam >= 15 && jam < 18) sapaan = "Selamat Sore";
+        
+        // Gabungkan sapaan dengan nama depan
+        let nama = window.namaPanggilanUser ? ", " + window.namaPanggilanUser : ",";
+        document.getElementById("teksSapaan").textContent = sapaan + nama;
+
+        const opsiTanggal = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' };
+        const tanggalFormatted = now.toLocaleDateString('id-ID', opsiTanggal);
+        const waktuFormatted = now.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
+        document.getElementById("teksTanggalWaktu").textContent = `${tanggalFormatted} • ${waktuFormatted} WIB`;
+    }, 1000);
+}
+
+// ==========================================
+// 3. LOGIKA ALGORITMA (URGENSI & FILTERING)
+// ==========================================
 function perhitunganUrgensi(tenggat) {
     let waktuSekarang = new Date();
     let selisihWaktu = tenggat - waktuSekarang;
@@ -21,402 +56,398 @@ function perhitunganUrgensi(tenggat) {
     return (1 / (sisaHari + 1)) * 5;
 }
 
-function bersihkanForm() {
-    document.getElementById("inputNamaTugas").value = "";
-    document.getElementById("inputTenggat").value = "";
-
-    let semuaInputSub = document.getElementsByClassName("input-sub-tugas");
-    while (semuaInputSub.length > 1) {
-        semuaInputSub[semuaInputSub.length - 1].remove();
-    }
-
-    semuaInputSub[0].value = "";
-    semuaInputSub[0].placeholder = "Sub-tugas 1...";
-
-    hapusDraftInput();
+// Fungsi mengubah "2026-06-16T15:00" menjadi "16 Juni 2026, 15.00"
+function formatTanggalManusia(tenggatRaw) {
+    if (!tenggatRaw) return "-";
+    let dateObj = new Date(tenggatRaw);
+    return dateObj.toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' }) + ", " + dateObj.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
 }
+
+// Listener untuk Kolom Search
+document.getElementById("inputSearch").addEventListener("input", (e) => {
+    keywordCari = e.target.value.toLowerCase();
+    cetakDaftarTugas();
+});
+
+// Listener untuk Dropdown Sort
+document.getElementById("inputSort").addEventListener("change", (e) => {
+    modeSort = e.target.value;
+    cetakDaftarTugas();
+});
 
 // ==========================================
-// LOGIKA TOMBOL TAMBAH SUB-TUGAS DINAMIS
+// 4. RENDER KARTU TUGAS (DASHBOARD UTAMA)
 // ==========================================
-
-// Tombol untuk panel input utama
-document.getElementById("btnTambahSub").addEventListener("click", function() {
-    const wadah = document.getElementById("wadahSubTugas");
-    const jumlahSaatIni = wadah.getElementsByClassName("input-sub-tugas").length;
-    
-    let inputBaru = document.createElement("input");
-    inputBaru.type = "text";
-    inputBaru.className = "input-sub-tugas form-control";
-    inputBaru.placeholder = "Sub-tugas " + (jumlahSaatIni + 1) + "...";
-    wadah.appendChild(inputBaru);
-    inputBaru.focus();
-    simpanDraftInput();
-});
-
-// Tombol untuk jendela modal edit
-document.getElementById("btnTambahEditSub").addEventListener("click", function() {
-    const wadah = document.getElementById("wadahEditSubTugas");
-    const jumlahSaatIni = wadah.getElementsByClassName("edit-sub-tugas").length;
-    
-    let inputBaru = document.createElement("input");
-    inputBaru.type = "text";
-    inputBaru.className = "edit-sub-tugas form-control";
-    inputBaru.placeholder = "Sub-tugas " + (jumlahSaatIni + 1) + "...";
-    wadah.appendChild(inputBaru);
-    inputBaru.focus();
-});
-
-document.getElementById("tombolKosongkan").addEventListener("click", function () {
-    if (confirm("Kosongkan semua inputan yang sedang diketik?")) {
-        bersihkanForm();
-    }
-});
-
-const tombolSimpan = document.getElementById("tombolSimpan");
-tombolSimpan.addEventListener("click", function () {
-    let nama = document.getElementById("inputNamaTugas").value.trim();
-    let tenggatRaw = document.getElementById("inputTenggat").value;
-
-    if (!nama || !tenggatRaw) {
-        alert("Nama dan Tenggat wajib diisi!");
-        return;
-    }
-
-    let semuaInputSub = document.getElementsByClassName("input-sub-tugas");
-    let subTugas = [];
-    for (let input of semuaInputSub) {
-        if (input.value.trim() !== "") subTugas.push({ nama: input.value, isSelesai: false });
-    }
-
-    let skorUrgensi = perhitunganUrgensi(new Date(tenggatRaw));
-    let skorAkhir = (BOBOT_OUTDEGREE * subTugas.length) + (BOBOT_TENGGAT * skorUrgensi);
-
-    daftarTugasUser.push({
-        nama,
-        tenggat: tenggatRaw,
-        subTugas,
-        skor: skorAkhir.toFixed(2)
-    });
-
-    simpanDataTugas();
-    bersihkanForm();
-});
-
-
-function simpanDraftInput() {
-    let subValues = Array.from(document.getElementsByClassName("input-sub-tugas")).map(i => i.value);
-    let draft = {
-        nama: document.getElementById("inputNamaTugas").value,
-        tenggat: document.getElementById("inputTenggat").value,
-        subs: subValues
-    };
-    localStorage.setItem("draftInput", JSON.stringify(draft));
-}
-
-function muatDraftInput() {
-    let draft = JSON.parse(localStorage.getItem("draftInput"));
-    if (draft) {
-        document.getElementById("inputNamaTugas").value = draft.nama;
-        document.getElementById("inputTenggat").value = draft.tenggat;
-
-        const wadah = document.getElementById("wadahSubTugas");
-        wadah.innerHTML = "";
-        draft.subs.forEach((val, index) => {
-            let input = document.createElement("input");
-            input.type = "text";
-            input.className = "input-sub-tugas form-control";
-            input.value = val;
-            input.placeholder = "Sub-tugas " + (index + 1) + "...";
-            wadah.appendChild(input);
-        });
-    }
-}
-
-function hapusDraftInput() {
-    localStorage.removeItem("draftInput");
-}
-
-document.addEventListener("input", function (e) {
-    if (e.target.id === "inputNamaTugas" || e.target.id === "inputTenggat" || e.target.classList.contains("input-sub-tugas")) {
-        simpanDraftInput();
-    }
-});
-
-function toggleSubTugas(indeksTugas, indeksSub) {
-    daftarTugasUser[indeksTugas].subTugas[indeksSub].isSelesai = !daftarTugasUser[indeksTugas].subTugas[indeksSub].isSelesai;
-
-    if (daftarTugasUser[indeksTugas].subTugas[indeksSub].isSelesai === false) {
-        for (let k = indeksSub + 1; k < daftarTugasUser[indeksTugas].subTugas.length; k++) {
-            daftarTugasUser[indeksTugas].subTugas[k].isSelesai = false;
-        }
-    }
-
-    simpanDataTugas();
-}
-
-
-function hapusTugas(indeksTugas) {
-    let konfirmasi = confirm(`Apakah Anda yakin ingin menghapus tugas "${daftarTugasUser[indeksTugas].nama}"?`);
-    if (konfirmasi) {
-        daftarTugasUser.splice(indeksTugas, 1);
-        simpanDataTugas();
-    }
-}
-
-
 function cetakDaftarTugas() {
     const wadah = document.getElementById("wadahDaftarTugas");
     wadah.innerHTML = "";
 
-    daftarTugasUser.forEach((tugas, i) => {
+    // 1. Gandakan array agar sorting tidak merusak urutan asli, dan sisipkan indeks aslinya
+    let tugasDitampilkan = daftarTugasUser.map((tugas, index) => ({ ...tugas, indeksAsli: index }));
+
+    // 2. Filter berdasarkan teks pencarian
+    if (keywordCari) {
+        tugasDitampilkan = tugasDitampilkan.filter(t => t.nama.toLowerCase().includes(keywordCari));
+    }
+
+    // 3. Pengurutan (Sorting)
+    if (modeSort === "urgensiTinggi") tugasDitampilkan.sort((a, b) => b.skor - a.skor);
+    else if (modeSort === "urgensiRendah") tugasDitampilkan.sort((a, b) => a.skor - b.skor);
+    else if (modeSort === "abjadAZ") tugasDitampilkan.sort((a, b) => a.nama.localeCompare(b.nama));
+    else if (modeSort === "abjadZA") tugasDitampilkan.sort((a, b) => b.nama.localeCompare(a.nama));
+
+    // 4. Proses pencetakan kartu tugas minimalis
+    tugasDitampilkan.forEach((tugas) => {
+        let jmlSelesai = tugas.subTugas.filter(s => s.isSelesai).length;
+        let totalSub = tugas.subTugas.length;
+        let persentase = totalSub === 0 ? 0 : Math.round((jmlSelesai / totalSub) * 100);
+
         let div = document.createElement("div");
-        div.style = "border: 1px solid #ccc; padding: 15px; border-radius: 8px; background: white; margin-bottom: 15px;";
-
-        let listSubTugasHTML = tugas.subTugas.map((sub, j) => {
-            let isTerbuka = (j === 0) || (tugas.subTugas[j - 1].isSelesai === true);
-            let gayaTeks = sub.isSelesai ? 'text-decoration: line-through; color: #aaa;' : (isTerbuka ? 'color: #000;' : 'color: #ccc;');
-            let atributCheckbox = sub.isSelesai ? 'checked' : '';
-            let atributKunci = isTerbuka ? '' : 'disabled';
-
-            return `
-                <li style="${gayaTeks} margin-bottom: 8px;">
-                    <input type="checkbox" onchange="toggleSubTugas(${i}, ${j})" ${atributCheckbox} ${atributKunci}> 
-                    ${sub.nama}
-                </li>`;
-        }).join('');
+        div.className = "task-card";
+        // Saat kartu diklik, buka detail berdasarkan indeks aslinya
+        div.onclick = () => bukaModalDetail(tugas.indeksAsli); 
 
         div.innerHTML = `
-            <div style="display: flex; justify-content: space-between; align-items: flex-start;">
-                <div>
-                    <strong style="font-size: 18px; color: #333;">#${i + 1} - ${tugas.nama}</strong> <br>
-                    <div style="margin-top: 5px; font-size: 13px;">
-                        <span style="background: #ffeeba; color: #856404; padding: 3px 8px; border-radius: 12px; font-weight: bold; margin-right: 8px;">Skor: ${tugas.skor}</span>
-                        <span style="color: #666;">🗓️ ${tugas.tenggat.replace('T', ' ')}</span>
-                    </div>
-                </div>
-                <div style="display: flex; gap: 5px;">
-                    <button onclick="bukaModalEdit(${i})" style="background-color: #007bff; color: white; border: none; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: bold;">Edit</button>
-                    <button onclick="hapusTugas(${i})" style="background-color: #dc3545; color: white; border: none; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: bold;">Hapus</button>
+            <div class="task-info">
+                <h3>${tugas.nama}</h3>
+                <div style="font-size: 12px; color: var(--text-muted); display: flex; gap: 15px; margin-top: 8px;">
+                    <span>🗓️ ${formatTanggalManusia(tugas.tenggat)}</span>
+                    <span>📋 ${jmlSelesai}/${totalSub} Sub-tugas Selesai</span>
+                    <span style="color: var(--uin-gold); font-weight: bold;">🔥 Skor: ${tugas.skor}</span>
                 </div>
             </div>
-            <ul style="list-style-type: none; padding-left: 5px; margin-top: 18px; font-size: 15px;">
-                ${listSubTugasHTML}
-            </ul>
+            <div class="progress-circle" style="background: conic-gradient(var(--uin-green) ${persentase}%, #e9ecef 0);">
+                <span>${persentase}%</span>
+            </div>
         `;
-
         wadah.appendChild(div);
     });
 }
 
-let indeksTugasAktif = null;
+// ==========================================
+// 5. STATEFUL MODAL (DETAIL, EDIT, TAMBAH)
+// ==========================================
 
-const opsiReminder = document.getElementById("opsiReminder");
-const editManualReminder = document.getElementById("editManualReminder");
-
-opsiReminder.addEventListener("change", function () {
-    if (opsiReminder.value === "manual") {
-        editManualReminder.style.display = "block";
-    } else {
-        editManualReminder.style.display = "none";
-    }
-});
-
-function bukaModalEdit(indeks) {
-    indeksTugasAktif = indeks;
+// Buka Modal Mode Baca (Klik Kartu)
+function bukaModalDetail(indeks) {
+    indeksAktif = indeks;
     let tugas = daftarTugasUser[indeks];
 
-    document.getElementById("editNamaTugas").value = tugas.nama;
-    document.getElementById("editTenggat").value = tugas.tenggat;
+    // Tampilkan Mode Baca, Sembunyikan Form Edit
+    document.getElementById("modeBaca").style.display = "block";
+    document.getElementById("modeEdit").style.display = "none";
+    document.getElementById("btnTitikTiga").style.display = "block"; // Munculkan titik tiga
 
-    wadahEditSubTugas.innerHTML = "";
-    tugas.subTugas.forEach((sub, index) => {
-        let input = document.createElement("input");
-        input.type = "text";
-        input.className = "edit-sub-tugas form-control";
-        input.value = sub.nama;
-        input.placeholder = "Sub-tugas " + (index + 1) + "...";
-        wadahEditSubTugas.appendChild(input);
-    });
+    document.getElementById("bacaNamaTugas").textContent = tugas.nama;
+    document.getElementById("bacaTenggat").textContent = formatTanggalManusia(tugas.tenggat);
+
+    // Render Sub-tugas Checkbox
+    let wadahSub = document.getElementById("wadahBacaSubTugas");
+    wadahSub.innerHTML = "";
     
-    opsiReminder.value = tugas.jenisPengingat || "none";
-    if (opsiReminder.value === "manual") {
-        editManualReminder.style.display = "block";
-        editManualReminder.value = tugas.waktuPengingatManual || "";
-    } else {
-        editManualReminder.style.display = "none";
-        editManualReminder.value = "";
-    }
+    tugas.subTugas.forEach((sub, j) => {
+        let isTerbuka = (j === 0) || (tugas.subTugas[j - 1].isSelesai === true);
+        let checked = sub.isSelesai ? "checked" : "";
+        let disabled = isTerbuka ? "" : "disabled";
+        let warna = sub.isSelesai ? "color: #aaa; text-decoration: line-through;" : (isTerbuka ? "color: var(--carbon-black);" : "color: #ccc;");
+
+        wadahSub.innerHTML += `
+            <label style="display: flex; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--border-light); ${warna} cursor: ${isTerbuka ? 'pointer' : 'not-allowed'}; font-size: 14px;">
+                <input type="checkbox" onchange="toggleSubTugasDiModal(${indeks}, ${j})" ${checked} ${disabled} style="margin-right: 12px; width: 16px; height: 16px;">
+                ${sub.nama}
+            </label>
+        `;
+    });
 
     document.getElementById("modalOverlay").style.display = "block";
-    document.getElementById("modalEdit").style.display = "block";
+    document.getElementById("modalTugas").style.display = "block";
+    document.getElementById("dropdownMenu").classList.remove("show"); // Tutup menu jika terbuka
 }
 
-function tutupModal() {
-    document.getElementById("modalOverlay").style.display = "none";
-    document.getElementById("modalEdit").style.display = "none";
-    indeksTugasAktif = null;
+// Logika Centang Sub-Tugas di dalam Modal
+window.toggleSubTugasDiModal = function(indeksTugas, indeksSub) {
+    let tugas = daftarTugasUser[indeksTugas];
+    tugas.subTugas[indeksSub].isSelesai = !tugas.subTugas[indeksSub].isSelesai;
+    
+    // Jika sebuah sub-tugas dibatalkan, batalkan juga semua sub-tugas di bawahnya
+    if (!tugas.subTugas[indeksSub].isSelesai) {
+        for (let k = indeksSub + 1; k < tugas.subTugas.length; k++) {
+            tugas.subTugas[k].isSelesai = false;
+        }
+    }
+    
+    simpanDataTugas();
+    bukaModalDetail(indeksTugas); // Refresh visual modal
+};
+
+// Buka Modal Mode Tambah Tugas Baru (Klik Tombol Biru Kiri)
+document.getElementById("btnBukaModalTambah").onclick = () => {
+    indeksAktif = null; // Menandakan ini data baru, bukan edit
+    document.getElementById("inputNamaTugas").value = "";
+    document.getElementById("inputTenggat").value = "";
+    
+    // Siapkan 1 kolom input sub-tugas kosong
+    document.getElementById("wadahSubTugas").innerHTML = `
+        <div style="display: flex; gap: 8px;">
+            <input type="text" class="input-sub-tugas form-control" placeholder="Sub-tugas 1..." style="margin-bottom:0;">
+            <button type="button" class="btn-icon" style="background-color: #ffebee; color: #dc3545; border-radius: 8px;" onclick="hapusInputSubTugas(this)">✕</button>
+        </div>`;
+    
+    document.getElementById("modeBaca").style.display = "none";
+    document.getElementById("modeEdit").style.display = "block";
+    document.getElementById("btnTitikTiga").style.display = "none"; // Sembunyikan titik tiga
+
+    document.getElementById("modalOverlay").style.display = "block";
+    document.getElementById("modalTugas").style.display = "block";
+};
+
+// ==========================================
+// 6. MENU TITIK TIGA (DROPDOWN)
+// ==========================================
+document.getElementById("btnTitikTiga").onclick = () => {
+    document.getElementById("dropdownMenu").classList.toggle("show");
+};
+
+// Opsi A: EDIT
+document.getElementById("menuEdit").onclick = (e) => {
+    e.preventDefault();
+    document.getElementById("dropdownMenu").classList.remove("show");
+    document.getElementById("btnTitikTiga").style.display = "none";
+    
+    // Tukar Wujud
+    document.getElementById("modeBaca").style.display = "none";
+    document.getElementById("modeEdit").style.display = "block";
+
+    let tugas = daftarTugasUser[indeksAktif];
+    document.getElementById("inputNamaTugas").value = tugas.nama;
+    document.getElementById("inputTenggat").value = tugas.tenggat;
+
+    // Susun ulang input sub-tugas
+    let wadah = document.getElementById("wadahSubTugas");
+    wadah.innerHTML = "";
+    tugas.subTugas.forEach((sub, idx) => {
+        wadah.innerHTML += `
+            <div style="display: flex; gap: 8px;">
+                <input type="text" class="input-sub-tugas form-control" value="${sub.nama}" placeholder="Sub-tugas ${idx + 1}..." style="margin-bottom:0;">
+                <button type="button" class="btn-icon" style="background-color: #ffebee; color: #dc3545; border-radius: 8px;" onclick="hapusInputSubTugas(this)">✕</button>
+            </div>`;
+    });
+};
+
+// Fungsi untuk mengurutkan ulang placeholder sub-tugas
+function perbaruiNomorSubTugas() {
+    let semuaInput = document.querySelectorAll("#wadahSubTugas .input-sub-tugas");
+    semuaInput.forEach((input, index) => {
+        input.placeholder = `Sub-tugas ${index + 1}...`;
+    });
 }
-document.getElementById("btnBatalEdit").addEventListener("click", tutupModal);
 
-document.getElementById("btnSimpanEdit").addEventListener("click", function () {
-    let namaBaru = document.getElementById("editNamaTugas").value.trim();
-    let tenggatBaru = document.getElementById("editTenggat").value;
+// Fungsi global untuk menghapus baris sub-tugas
+window.hapusInputSubTugas = function(elemenTombol) {
+    elemenTombol.parentElement.remove();
+    perbaruiNomorSubTugas(); // Urutkan ulang setelah dihapus
+};
 
-    if (!namaBaru || !tenggatBaru) {
-        alert("Nama dan Tenggat tidak boleh kosong!");
-        return;
+// Menambah Sub-Tugas Dinamis di Form Edit/Tambah
+document.getElementById("btnTambahSub").onclick = () => {
+    let wadah = document.getElementById("wadahSubTugas");
+    let div = document.createElement("div");
+    div.style.display = "flex"; div.style.gap = "8px";
+    div.innerHTML = `
+        <input type="text" class="input-sub-tugas form-control" style="margin-bottom:0;">
+        <button type="button" class="btn-icon" style="background-color: #ffebee; color: #dc3545; border-radius: 8px;" onclick="hapusInputSubTugas(this)">✕</button>
+    `;
+    wadah.appendChild(div);
+    perbaruiNomorSubTugas(); // Otomatis beri nomor yang benar setelah ditambahkan
+};
+
+// Opsi B: HAPUS
+document.getElementById("menuHapus").onclick = (e) => {
+    e.preventDefault();
+    document.getElementById("dropdownMenu").classList.remove("show");
+    let nama = daftarTugasUser[indeksAktif].nama;
+    
+    if (confirm(`Peringatan: Apakah Anda yakin ingin menghapus tugas "${nama}" beserta seluruh progressnya?`)) {
+        daftarTugasUser.splice(indeksAktif, 1);
+        simpanDataTugas();
+        tutupSemuaModal();
     }
+};
 
-    if (opsiReminder.value === "manual") {
-        if (!editManualReminder.value) {
-            alert("Silakan masukkan waktu alarm manual!");
-            return;
-        }
+// Opsi C: REMINDER (Buka Modal Mini)
+document.getElementById("menuReminder").onclick = (e) => {
+    e.preventDefault();
+    document.getElementById("dropdownMenu").classList.remove("show");
+    document.getElementById("modalReminder").style.display = "block"; // Muncul menimpa modal utama
+    
+    let tugas = daftarTugasUser[indeksAktif];
+    document.getElementById("opsiReminder").value = tugas.jenisPengingat || "none";
+    document.getElementById("editManualReminder").value = tugas.waktuPengingatManual || "";
+    document.getElementById("editManualReminder").style.display = (tugas.jenisPengingat === "manual") ? "block" : "none";
+};
 
-        let waktuTenggat = new Date(tenggatBaru).getTime();
-        let waktuAlarm = new Date(editManualReminder.value).getTime();
+// Logika Input Reminder Manual
+document.getElementById("opsiReminder").onchange = (e) => {
+    document.getElementById("editManualReminder").style.display = (e.target.value === "manual") ? "block" : "none";
+};
 
-        if (waktuAlarm >= waktuTenggat) {
-            alert("GAGAL: Waktu pengingat (alarm) harus dipasang LEBIH AWAL dari waktu tenggat!");
-            return;
-        }
+// Simpan Reminder ke Database
+document.getElementById("btnSimpanReminder").onclick = () => {
+    if (indeksAktif !== null) {
+        daftarTugasUser[indeksAktif].jenisPengingat = document.getElementById("opsiReminder").value;
+        daftarTugasUser[indeksAktif].waktuPengingatManual = document.getElementById("editManualReminder").value;
+        simpanDataTugas();
+        document.getElementById("modalReminder").style.display = "none";
+        alert("Pengingat untuk tugas ini berhasil disetel!");
     }
+};
 
-    let semuaEditSub = document.getElementsByClassName("edit-sub-tugas");
+// ==========================================
+// 7. MENYIMPAN TUGAS (BARU / EDIT)
+// ==========================================
+document.getElementById("tombolSimpanTugas").onclick = () => {
+    let nama = document.getElementById("inputNamaTugas").value.trim();
+    let tenggatRaw = document.getElementById("inputTenggat").value;
+    
+    if (!nama || !tenggatRaw) return alert("Nama Tugas dan Tenggat Waktu wajib diisi!");
+
+    // Mengumpulkan sub-tugas dari input
+    let subInputs = document.getElementsByClassName("input-sub-tugas");
     let subTugasBaru = [];
-    let oldSubTugas = daftarTugasUser[indeksTugasAktif].subTugas;
-
-    for (let i = 0; i < semuaEditSub.length; i++) {
-        let val = semuaEditSub[i].value.trim();
+    
+    for (let input of subInputs) {
+        let val = input.value.trim();
         if (val !== "") {
-            let statusSelesai = (oldSubTugas[i] && oldSubTugas[i].nama === val) ? oldSubTugas[i].isSelesai : false;
-            subTugasBaru.push({ nama: val, isSelesai: statusSelesai });
+            let isSelesai = false;
+            // Jika ini mode edit, dan nama sub-tugas tidak berubah, pertahankan status centangnya
+            if (indeksAktif !== null) {
+                let oldSub = daftarTugasUser[indeksAktif].subTugas.find(s => s.nama === val);
+                if (oldSub) isSelesai = oldSub.isSelesai;
+            }
+            subTugasBaru.push({ nama: val, isSelesai });
         }
     }
 
-    daftarTugasUser[indeksTugasAktif].nama = namaBaru;
-    daftarTugasUser[indeksTugasAktif].tenggat = tenggatBaru;
-    daftarTugasUser[indeksTugasAktif].subTugas = subTugasBaru;
-    daftarTugasUser[indeksTugasAktif].jenisPengingat = opsiReminder.value;
-    daftarTugasUser[indeksTugasAktif].waktuPengingatManual = editManualReminder.value;
+    let skorUrgensi = perhitunganUrgensi(new Date(tenggatRaw));
+    let skorAkhir = ((BOBOT_OUTDEGREE * subTugasBaru.length) + (BOBOT_TENGGAT * skorUrgensi)).toFixed(2);
 
-    let skorUrgensiBaru = perhitunganUrgensi(new Date(tenggatBaru));
-    daftarTugasUser[indeksTugasAktif].skor = ((BOBOT_OUTDEGREE * subTugasBaru.length) + (BOBOT_TENGGAT * skorUrgensiBaru)).toFixed(2);
+    if (indeksAktif !== null) {
+        // PERBARUI TUGAS LAMA
+        daftarTugasUser[indeksAktif].nama = nama;
+        daftarTugasUser[indeksAktif].tenggat = tenggatRaw;
+        daftarTugasUser[indeksAktif].subTugas = subTugasBaru;
+        daftarTugasUser[indeksAktif].skor = skorAkhir;
+    } else {
+        // BUAT TUGAS BARU
+        daftarTugasUser.push({
+            nama, 
+            tenggat: tenggatRaw, 
+            subTugas: subTugasBaru, 
+            skor: skorAkhir,
+            jenisPengingat: "none", 
+            waktuPengingatManual: ""
+        });
+    }
 
     simpanDataTugas();
-    tutupModal();
-});
+    tutupSemuaModal();
+};
 
 // ==========================================
-// MESIN CLOUD FIRESTORE (DATABASE)
+// 8. FUNGSI PENUTUP MODAL GLOBAL
 // ==========================================
+function tutupSemuaModal() {
+    document.getElementById("modalOverlay").style.display = "none";
+    document.getElementById("modalTugas").style.display = "none";
+    document.getElementById("modalReminder").style.display = "none";
+    document.getElementById("dropdownMenu").classList.remove("show");
+    indeksAktif = null;
+}
+document.getElementById("btnTutupModal").onclick = tutupSemuaModal;
+document.getElementById("btnTutupReminder").onclick = () => document.getElementById("modalReminder").style.display = "none";
 
-// Fungsi untuk menyimpan data ke Cloud
+// Klik di luar jendela untuk menutup modal
+window.onclick = (e) => {
+    if (e.target.id === "modalOverlay") tutupSemuaModal();
+};
+
+// ==========================================
+// 9. MESIN CLOUD FIRESTORE & OTENTIKASI (TETAP SAMA)
+// ==========================================
 async function simpanDataTugas() {
-    // 1. Urutkan berdasarkan skor tertinggi
-    daftarTugasUser.sort((a, b) => b.skor - a.skor);
-    
-    // 2. Simpan ke penyimpanan lokal browser (sebagai cadangan)
     localStorage.setItem("dataTugas", JSON.stringify(daftarTugasUser));
     
-    // 3. Tembakkan ke Cloud Firestore JIKA pengguna sudah Login
     if (currentUserUID) {
         try {
-            // Menyiapkan dokumen dengan nama file berupa UID pengguna
             const docRef = doc(db, "tugasPengguna", currentUserUID);
-            // Menyimpan seluruh array tugas ke dalam database
             await setDoc(docRef, { 
                 email: currentUserEmail,
                 daftarTugas: daftarTugasUser 
             });
-            console.log("Sukses: Data tersimpan di Cloud Database!");
+            console.log("Sukses sinkronisasi ke Cloud!");
         } catch (error) {
             console.error("Gagal menyimpan ke Cloud:", error);
         }
     }
-    
-    // 4. Cetak ulang ke layar
     cetakDaftarTugas();
 }
 
-// Fungsi untuk menarik data dari Cloud saat pertama kali Login
 async function muatDataDariCloud(uid) {
     try {
         const docRef = doc(db, "tugasPengguna", uid);
         const docSnap = await getDoc(docRef);
-        
         if (docSnap.exists()) {
-            // Jika ada data di server, timpa data lokal dengan data server
             daftarTugasUser = docSnap.data().daftarTugas || [];
-            console.log("Sukses: Data berhasil ditarik dari Cloud!");
+            console.log("Data awan berhasil ditarik!");
         } else {
-            // Jika pengguna baru, kosongkan
             daftarTugasUser = []; 
         }
-        
-        simpanDataTugas(); // Update layar
+        simpanDataTugas(); 
     } catch (error) {
         console.error("Gagal menarik data dari Cloud:", error);
     }
 }
 
-// ==========================================
-// FIX SCOPE UNTUK JAVASCRIPT MODULE
-// ==========================================
-// Karena file ini sekarang adalah "Module", fungsi tidak lagi bersifat global.
-// Kita harus mendaftarkannya ke objek 'window' agar bisa dipanggil oleh tombol di HTML (onclick)
-window.hapusTugas = hapusTugas;
-window.toggleSubTugas = toggleSubTugas;
-window.bukaModalEdit = bukaModalEdit;
-window.tutupModal = tutupModal;
-
-// ==========================================
-// LOGIKA OTENTIKASI GOOGLE (LOGIN & LOGOUT)
-// ==========================================
 const btnLogin = document.getElementById("btnLogin");
 const btnLogout = document.getElementById("btnLogout");
 const userInfo = document.getElementById("userInfo");
 
-// Fungsi ketika tombol Login diklik
 btnLogin.addEventListener("click", () => {
-    signInWithPopup(auth, googleProvider)
-        .then((result) => {
-            console.log("Berhasil masuk sebagai:", result.user.displayName);
-        })
-        .catch((error) => {
-            console.error("Gagal login:", error);
-            alert("Terjadi kesalahan saat login!");
-        });
+    // Meminta prompt select_account agar bisa ganti email
+    googleProvider.setCustomParameters({ prompt: 'select_account' });
+    signInWithPopup(auth, googleProvider).catch((error) => console.error("Gagal login:", error));
 });
 
-// Fungsi ketika tombol Logout diklik
 btnLogout.addEventListener("click", () => {
-    signOut(auth).then(() => {
-        console.log("Berhasil keluar.");
-    });
+    signOut(auth).then(() => console.log("Berhasil keluar."));
 });
 
-// Pemantau Status Login (Berjalan otomatis saat halaman direfresh)
+// ==========================================
+// 9. OTENTIKASI & NAMA PANGGILAN
+// ==========================================
 onAuthStateChanged(auth, async (user) => {
     if (user) {
-        // --- JIKA LOGIN ---
         btnLogin.style.display = "none";
         userInfo.style.display = "flex";
-        document.getElementById("userName").textContent = user.displayName;
+        
+        // Mengambil nama depan saja dari Google Display Name
+        let namaLengkap = user.displayName || "Mahasiswa";
+        let namaDepan = namaLengkap.split(" ")[0]; 
+        
+        document.getElementById("userName").textContent = namaLengkap;
+        document.getElementById("userEmail").textContent = user.email;
         document.getElementById("userFoto").src = user.photoURL;
         
-        // Simpan UID dan tarik data miliknya dari server
+        // Simpan nama depan ke variabel global sementara untuk sapaan
+        window.namaPanggilanUser = namaDepan;
+        
         currentUserUID = user.uid;
         currentUserEmail = user.email;
         await muatDataDariCloud(currentUserUID);
-        
     } else {
-        // --- JIKA LOGOUT / BELUM LOGIN ---
         btnLogin.style.display = "block";
         userInfo.style.display = "none";
-        
-        // Hapus UID dan bersihkan layar dari tugas orang lain
+        window.namaPanggilanUser = "";
         currentUserUID = null;
         daftarTugasUser = [];
         cetakDaftarTugas();
